@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador 3D - Granja IoT de Iglús para Cuyes</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #000; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+
+        /* UI Superpuesta */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column; justify-content: space-between;
+        }
+
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255, 255, 255, 0.8); }
+        #crosshair::before { top: 9px; left: 0; width: 20px; height: 2px; }
+        #crosshair::after { top: 0; left: 9px; width: 2px; height: 20px; }
+
+        .panel-ui {
+            background: rgba(10, 20, 30, 0.85); color: white; padding: 12px; margin: 15px;
+            border-radius: 8px; width: fit-content; pointer-events: auto;
+            backdrop-filter: blur(8px); border: 1px solid #34495e;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+
+        h3 { margin-top: 0; color: #2ecc71; text-transform: uppercase; font-size: 14px; letter-spacing: 1px; margin-bottom: 8px;}
+
+        #instructions { align-self: flex-start; }
+        #instructions p { margin: 4px 0; font-size: 12px; }
+        .key { background: #34495e; color: #fff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-family: monospace; }
+        
+        #control-panel { width: 240px; align-self: flex-end; }
+        
+        .slider-container { display: flex; flex-direction: column; gap: 10px; margin-top: 15px; }
+        input[type=range] { width: 100%; accent-color: #3498db; }
+
+        #start-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, #2c3e50 0%, #000000 100%);
+            color: white; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100; pointer-events: auto; cursor: pointer;
+        }
+        #start-screen h1 { font-size: 48px; color: white; margin-bottom: 10px; text-align: center;}
+        #start-screen p { font-size: 20px; color: #bdc3c7; text-align: center;}
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="ui-layer">
+        <div id="instructions" class="panel-ui">
+            <p><span class="key">W</span> <span class="key">A</span> <span class="key">S</span> <span class="key">D</span> Moverse</p>
+            <p><span class="key">Shift</span> Correr</p>
+            <p><span class="key">Espacio</span> Saltar</p>
+            <p><span class="key">Ratón</span> Mirar</p>
+            <p><span class="key">C</span> Celular</p>
+            <p><span class="key">F</span> Linterna</p>
+            <p style="margin-top: 10px; color: #bdc3c7; font-size: 10px; max-width: 180px;">
+                Fases: Suelo (Izq) | Celulosa (Medio) | Arcilla (Der).
+            </p>
+        </div>
+
+        <div id="control-panel" class="panel-ui">
+            <h3>Monitoreo IoT</h3>
+            <div style="font-size: 13px; margin-top:10px; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 5px;">
+                <div style="margin-bottom: 5px;">Ext. Ambiente: <span id="temp-amb" style="font-weight:bold; color:#f1c40f; float:right;">20°C</span></div>
+                <div>Int. Iglú: <span id="temp-int" style="font-weight:bold; color:#2ecc71; float:right;">20°C</span></div>
+            </div>
+            
+            <div class="slider-container">
+                <label for="time-slider" style="font-size: 12px; color:#aaa;">Hora (Día/Noche): <span id="time-display" style="float:right; font-weight:bold; color:#fff;">08:00</span></label>
+                <input type="range" id="time-slider" min="0" max="23.99" value="8" step="0.1">
+            </div>
+            <p style="font-size: 10px; color: #888; margin-top: 12px; text-align: center;">El Iglú regula térmicamente. El ventilador baja la temperatura gradualmente.</p>
+        </div>
+        <div id="crosshair"></div>
+    </div>
+
+    <div id="start-screen">
+        <h1>Simulador Iglú IoT 3D</h1>
+        <p>Haz clic en cualquier parte para entrar a la granja inteligente</p>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- VARIABLES GLOBALES ---
+        let scene, camera, renderer;
+        let sensors = []; 
+        let interiorLights = []; 
+        let fans = []; // Ventiladores del Iglú
+        let phoneScreenCtx, phoneScreenTex, phoneGroup; 
+        let isPhoneVisible = false; 
+        let cuyes = [];
+        let flashlight; 
+        
+        // Ciclo de Día/Noche y Termostato
+        let timeOfDay = 8; 
+        let ambientTemperature = 20;
+        let internalTemperature = 15.0; // Variable térmica fluida
+        let isFanActive = false; // Estado del ventilador (termostato)
+        let currentTimeStr = "08:00"; 
+        
+        let sunLight, ambientLight, sunMesh, stars, cloudGroup;
+
+        const posIglu1 = { x: -8, z: 0 }; 
+        const posIglu2 = { x: 0, z: 0 };  
+        const posIglu3 = { x: 8, z: 0 };  
+        const limiteCerca = 18;           
+        
+        // Controles y Jugador
+        const move = { forward: false, backward: false, left: false, right: false, run: false };
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+        let prevTime = performance.now();
+        
+        // Físicas
+        let velocityY = 0;
+        let isJumping = false;
+        const gravity = -15.0;
+
+        // --- INICIALIZACIÓN ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); 
+            scene.fog = new THREE.FogExp2(0x87CEEB, 0.015);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.4, 15);
+            scene.add(camera); 
+
+            flashlight = new THREE.SpotLight(0xffffff, 0, 35, Math.PI / 5, 0.5, 1);
+            flashlight.position.set(0, 0, 0.5);
+            flashlight.target.position.set(0, 0, -1);
+            camera.add(flashlight);
+            camera.add(flashlight.target);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            ambientLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4);
+            scene.add(ambientLight);
+
+            sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            sunLight.castShadow = true;
+            sunLight.shadow.camera.top = 25; sunLight.shadow.camera.bottom = -25;
+            sunLight.shadow.camera.left = -25; sunLight.shadow.camera.right = 25;
+            sunLight.shadow.mapSize.width = 2048; sunLight.shadow.mapSize.height = 2048;
+            scene.add(sunLight);
+
+            crearCieloYClima();
+            crearEntorno();
+            crearCercas();
+            crearFaroles(); 
+            crearPantallaGiganteAmbiental(); 
+
+            const matCelulosa = crearMaterialCelulosa();
+            const matArcilla = new THREE.MeshStandardMaterial({ color: 0xb38b6d, roughness: 0.9, side: THREE.DoubleSide, alphaTest: 0.5 });
+            
+            construirIglu(posIglu1.x, posIglu1.z, matCelulosa, 'ninguna', true, false, false);
+            construirIglu(posIglu2.x, posIglu2.z, matCelulosa, 'celulosa', false, true, false);
+            construirIglu(posIglu3.x, posIglu3.z, matArcilla, 'arcilla', true, true, true); 
+
+            crearCartel("Fase 1\nPara empezar se construyeron las bases del iglú usando una malla protectora en el suelo que cuida las patas de los cuyes y permite que los residuos caigan a la bandeja de compostaje.", posIglu1.x, posIglu1.z + 4);
+            crearCartel("Fase 2\nLuego se levantó la estructura con aislante de celulosa y se armó la entrada. Además se instaló el sensor ambiental y el panel solar en el techo para tener energía limpia.", posIglu2.x, posIglu2.z + 4);
+            crearCartel("Fase 3\nEl modelo final tiene un recubrimiento de arcilla que sella el calor. Todo el sistema inteligente ya está funcionando para proteger a los animales de los cambios bruscos de clima.", posIglu3.x, posIglu3.z + 4);
+
+            crearCelularIoT();
+            generarCuyes(35); 
+
+            setupControls();
+            setupUI();
+
+            actualizarEntornoDiario(0);
+            actualizarSensoresIoT();
+
+            animate();
+        }
+
+        // --- ASTRONOMÍA Y CLIMA ---
+        function crearCieloYClima() {
+            const sunGeo = new THREE.SphereGeometry(2, 32, 32);
+            const sunMat = new THREE.MeshBasicMaterial({color: 0xffffaa});
+            sunMesh = new THREE.Mesh(sunGeo, sunMat);
+            scene.add(sunMesh);
+
+            const starGeo = new THREE.BufferGeometry();
+            const starPos = [];
+            for(let i=0; i<5000; i++) {
+                starPos.push((Math.random()-0.5)*400, Math.random()*200+40, (Math.random()-0.5)*400);
+            }
+            starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+            const starMat = new THREE.PointsMaterial({color: 0xffffff, size: 0.25, transparent: true, opacity: 0});
+            stars = new THREE.Points(starGeo, starMat);
+            scene.add(stars);
+
+            cloudGroup = new THREE.Group();
+            const cloudGeo = new THREE.SphereGeometry(1, 16, 16);
+            const cloudMat = new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.8});
+            for(let i=0; i<45; i++) {
+                const cloud = new THREE.Group();
+                for(let j=0; j<8; j++) {
+                    const puff = new THREE.Mesh(cloudGeo, cloudMat);
+                    puff.position.set((Math.random()-0.5)*3.5, (Math.random()-0.5)*1.2, (Math.random()-0.5)*3.5);
+                    puff.scale.set(Math.random()*2+1, Math.random()*1+0.6, Math.random()*2+1);
+                    cloud.add(puff);
+                }
+                cloud.position.set((Math.random()-0.5)*350, Math.random()*30+50, (Math.random()-0.5)*350);
+                cloudGroup.add(cloud);
+            }
+            scene.add(cloudGroup);
+        }
+
+        function crearPantallaGiganteAmbiental() {
+            const bgGroup = new THREE.Group();
+            bgGroup.position.set(0, 0, -17.5); 
+
+            const metalMat = new THREE.MeshStandardMaterial({color: 0x222222, metalness: 0.8});
+            const p1 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 6), metalMat);
+            p1.position.set(-3, 3, 0); bgGroup.add(p1);
+            const p2 = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 6), metalMat);
+            p2.position.set(3, 3, 0); bgGroup.add(p2);
+
+            const sCanvas = document.createElement('canvas'); sCanvas.width = 1024; sCanvas.height = 512;
+            const sCtx = sCanvas.getContext('2d'); const sTex = new THREE.CanvasTexture(sCanvas);
+            const screen = new THREE.Mesh(new THREE.BoxGeometry(6.4, 3.2, 0.2), new THREE.MeshBasicMaterial({map: sTex}));
+            screen.position.set(0, 5, 0.1); 
+            bgGroup.add(screen);
+
+            scene.add(bgGroup);
+            sensors.push({ ctx: sCtx, texture: sTex, type: 'giant' });
+        }
+
+        // --- GENERADOR DE TEXTURAS ---
+        function crearMaterialCelulosa() {
+            const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#8c8f91'; ctx.fillRect(0, 0, 512, 512);
+            for(let i = 0; i < 50000; i++) {
+                const r = Math.random();
+                if(r < 0.3) ctx.fillStyle = '#6b6e70'; else if(r < 0.6) ctx.fillStyle = '#a8aaab'; else ctx.fillStyle = '#d1d3d4';
+                ctx.fillRect(Math.random()*512, Math.random()*512, Math.random()*3+1, Math.random()*3+1);
+            }
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(6, 6);
+            return new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 0.05, roughness: 1.0, side: THREE.DoubleSide, alphaTest: 0.5 });
+        }
+
+        function crearTexturaRejilla() {
+            const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, 512, 512); 
+            ctx.fillStyle = '#555555';
+            for(let i=0; i<=512; i+=32) { ctx.fillRect(i, 0, 4, 512); ctx.fillRect(0, i, 512, 4); }
+            const tex = new THREE.CanvasTexture(canvas); tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(4, 4);
+            return tex;
+        }
+
+        function crearTexturaMallaFina() {
+            const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#2c3e50'; ctx.fillRect(0, 0, 256, 256); 
+            ctx.fillStyle = '#1a252f'; 
+            for(let i=0; i<=256; i+=16) { ctx.fillRect(i, 0, 4, 256); ctx.fillRect(0, i, 256, 4); }
+            const tex = new THREE.CanvasTexture(canvas); tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(8, 8);
+            return tex;
+        }
+
+        function crearTexturaMadera() {
+            const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#5c4033'; ctx.fillRect(0, 0, 256, 256);
+            for(let i=0; i<300; i++) {
+                ctx.fillStyle = Math.random() > 0.5 ? '#4a332a' : '#6b4c3a';
+                ctx.fillRect(0, Math.random() * 256, 256, Math.random() * 4);
+            }
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function crearTexturaPanelSolar() {
+            const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#0f2042'; ctx.fillRect(0,0,256,256);
+            ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 2;
+            for(let y=0; y<=256; y+=32) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(256,y); ctx.stroke(); }
+            for(let x=0; x<=256; x+=64) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,256); ctx.stroke(); }
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- SISTEMAS DE CONSTRUCCIÓN ---
+        function construirIglu(posX, posZ, materialBase, tipoPared, tieneRejilla, tienePanel, esFinal) {
+            const igluGroup = new THREE.Group();
+            igluGroup.position.set(posX, 0, posZ);
+            const alturaBase = tieneRejilla ? 0.15 : 0.0;
+
+            if (tieneRejilla) {
+                const darkBase = new THREE.Mesh(new THREE.CylinderGeometry(1.64, 1.64, 0.14, 32), new THREE.MeshStandardMaterial({color: 0x111111}));
+                darkBase.position.y = 0.07; igluGroup.add(darkBase);
+
+                const gridTex = crearTexturaRejilla();
+                const gridMat = new THREE.MeshStandardMaterial({ map: gridTex, transparent: true, side: THREE.DoubleSide, metalness: 0.5, roughness: 0.5 });
+                const gridFloor = new THREE.Mesh(new THREE.CylinderGeometry(1.65, 1.65, 0.02, 32), gridMat);
+                gridFloor.position.y = 0.14; gridFloor.receiveShadow = true; igluGroup.add(gridFloor);
+
+                const safeMeshTex = crearTexturaMallaFina();
+                const safeGridFloor = new THREE.Mesh(new THREE.CylinderGeometry(1.65, 1.65, 0.01, 32), new THREE.MeshStandardMaterial({ map: safeMeshTex, roughness: 0.9 }));
+                safeGridFloor.position.y = 0.155; safeGridFloor.receiveShadow = true; igluGroup.add(safeGridFloor);
+
+                const baseRing = new THREE.Mesh(new THREE.CylinderGeometry(1.65, 1.65, 0.15, 32, 1, true), materialBase); 
+                baseRing.position.y = 0.075; igluGroup.add(baseRing);
+
+                const handle = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.04, 0.1), new THREE.MeshStandardMaterial({color:0x888888}));
+                handle.position.set(0, 0.05, 1.65); igluGroup.add(handle);
+            } else {
+                const baseMesh = new THREE.Mesh(new THREE.CylinderGeometry(1.65, 1.65, 0.05, 32), materialBase);
+                baseMesh.position.y = 0.025; baseMesh.receiveShadow = true; igluGroup.add(baseMesh);
+            }
+
+            if (tipoPared !== 'ninguna') {
+                function createDoorAlphaMap(radius, doorW, doorH) {
+                    const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 1024; const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = 'white'; ctx.fillRect(0, 0, 1024, 1024);
+                    const pW = (doorW / (2 * Math.PI * radius)) * 1024; const pH = (doorH / (radius * Math.PI / 2)) * 1024;
+                    ctx.fillStyle = 'black'; ctx.fillRect(512 - pW/2, 1024 - pH, pW, pH); return new THREE.CanvasTexture(canvas);
+                }
+
+                const outMat = materialBase.clone(); outMat.alphaMap = createDoorAlphaMap(1.5, 0.8, 0.6);
+                const outDome = new THREE.Mesh(new THREE.SphereGeometry(1.5, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2), outMat);
+                outDome.rotation.y = -Math.PI / 2; outDome.position.y = alturaBase; outDome.castShadow = true; outDome.receiveShadow = true; igluGroup.add(outDome);
+
+                const inMat = materialBase.clone(); inMat.alphaMap = createDoorAlphaMap(1.35, 0.8, 0.6);
+                const inDome = new THREE.Mesh(new THREE.SphereGeometry(1.35, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2), inMat);
+                inDome.rotation.y = -Math.PI / 2; inDome.position.y = alturaBase; inDome.receiveShadow = true; igluGroup.add(inDome);
+
+                const leftP = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.6, 0.15), materialBase);
+                leftP.position.set(-0.4, 0.3 + alturaBase, 1.425); leftP.castShadow = true; igluGroup.add(leftP);
+                const rightP = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.6, 0.15), materialBase);
+                rightP.position.set(0.4, 0.3 + alturaBase, 1.425); rightP.castShadow = true; igluGroup.add(rightP);
+                const topP = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.1, 0.15), materialBase);
+                topP.position.set(0, 0.65 + alturaBase, 1.425); topP.castShadow = true; igluGroup.add(topP);
+
+                const chY = 1.77 + alturaBase;
+                const chimney = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.56, 16, 1, true), materialBase);
+                chimney.position.set(0, chY, 0); chimney.castShadow = true; igluGroup.add(chimney);
+                const hole = new THREE.Mesh(new THREE.CircleGeometry(0.145, 16), new THREE.MeshBasicMaterial({color: 0x050505}));
+                hole.rotation.x = -Math.PI/2; hole.position.set(0, chY - 0.27, 0); igluGroup.add(hole);
+
+                for(let i=0; i<4; i++) {
+                    const sup = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.08, 8), materialBase);
+                    sup.position.set(Math.cos((i*Math.PI)/2)*0.13, chY+0.32, Math.sin((i*Math.PI)/2)*0.13); igluGroup.add(sup);
+                }
+                const cap = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.15, 16), materialBase);
+                cap.position.set(0, chY + 0.43, 0); cap.castShadow = true; igluGroup.add(cap);
+
+                // --- Ventilador de Extracción ---
+                const fanGroup = new THREE.Group();
+                fanGroup.position.set(0, chY + 0.1, 0); 
+                const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.06), new THREE.MeshStandardMaterial({color: 0x222222}));
+                fanGroup.add(motor);
+                for(let i=0; i<4; i++) {
+                    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.01, 0.04), new THREE.MeshStandardMaterial({color: 0x111111}));
+                    blade.position.x = 0.07;
+                    const pivot = new THREE.Group();
+                    pivot.rotation.y = (i * Math.PI * 2) / 4;
+                    pivot.add(blade);
+                    fanGroup.add(pivot);
+                }
+                igluGroup.add(fanGroup);
+                fans.push(fanGroup);
+
+                // Pantalla Mini sobre el iglú
+                const sCanvas = document.createElement('canvas'); sCanvas.width = 256; sCanvas.height = 128;
+                const sCtx = sCanvas.getContext('2d'); const sTex = new THREE.CanvasTexture(sCanvas);
+                const sensor = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 0.05), new THREE.MeshBasicMaterial({ map: sTex }));
+                sensor.position.set(0, 0.8 + alturaBase, 1.45); 
+                const sFrame = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.19, 0.04), new THREE.MeshStandardMaterial({color: 0x333333}));
+                sFrame.position.set(0, 0.8 + alturaBase, 1.44);
+                igluGroup.add(sFrame); igluGroup.add(sensor);
+                sensors.push({ ctx: sCtx, texture: sTex, type: 'mini' });
+
+                if (tienePanel) {
+                    const pGroup = new THREE.Group();
+                    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.3), new THREE.MeshStandardMaterial({color: 0x555555, metalness: 0.8}));
+                    pole.position.set(-0.8, 1.3 + alturaBase, -0.6); pGroup.add(pole);
+                    const panel = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.02, 0.8), new THREE.MeshStandardMaterial({ map: crearTexturaPanelSolar(), metalness: 0.6, roughness: 0.2, side: THREE.DoubleSide }));
+                    panel.position.set(-0.8, 1.45 + alturaBase, -0.6); panel.rotation.x = -Math.PI / 6; panel.rotation.y = Math.PI / 6; panel.castShadow = true; pGroup.add(panel);
+                    igluGroup.add(pGroup);
+                }
+
+                if (esFinal) {
+                    const lampGroup = new THREE.Group();
+                    lampGroup.position.set(0, 1.35 + alturaBase, 0);
+
+                    const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.3), new THREE.MeshStandardMaterial({color: 0x111111}));
+                    cable.position.y = 0.15; lampGroup.add(cable);
+
+                    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.06, 16, 16), new THREE.MeshBasicMaterial({color: 0x555555}));
+                    lampGroup.add(bulb);
+
+                    const light = new THREE.PointLight(0xffcc66, 0, 4); 
+                    lampGroup.add(light);
+
+                    igluGroup.add(lampGroup);
+                    interiorLights.push({ bulb: bulb, light: light });
+                }
+            }
+            scene.add(igluGroup);
+        }
+
+        function crearCelularIoT() {
+            phoneGroup = new THREE.Group();
+            
+            const bodyMat = new THREE.MeshStandardMaterial({color: 0x2c3e50, metalness: 0.6, roughness: 0.2});
+            const phoneBody = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.65, 0.03), bodyMat);
+            const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.63, 0.031), new THREE.MeshBasicMaterial({color: 0x050505}));
+            
+            const sCanvas = document.createElement('canvas'); sCanvas.width = 512; sCanvas.height = 1024;
+            phoneScreenCtx = sCanvas.getContext('2d'); phoneScreenTex = new THREE.CanvasTexture(sCanvas);
+            
+            const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.6), new THREE.MeshBasicMaterial({map: phoneScreenTex}));
+            screen.position.z = 0.016; 
+            
+            phoneGroup.add(phoneBody); phoneGroup.add(bezel); phoneGroup.add(screen);
+            
+            phoneGroup.position.set(0.4, -1.5, -0.8); phoneGroup.rotation.set(-Math.PI / 2, -0.2, 0.05); 
+            camera.add(phoneGroup);
+            sensors.push({ ctx: phoneScreenCtx, texture: phoneScreenTex, type: 'phone' });
+        }
+
+        function crearCartel(texto, x, z) {
+            const woodMat = new THREE.MeshStandardMaterial({ map: crearTexturaMadera() });
+            const poste = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.5, 0.1), woodMat);
+            poste.position.set(x - 2.5, 0.75, z); poste.castShadow = true; scene.add(poste);
+
+            const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.fillStyle = '#2c3e50'; ctx.fillRect(0, 0, 1024, 512); 
+            ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = 15; ctx.strokeRect(10,10,1004,492); 
+
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            
+            const partes = texto.split('\n');
+            const titulo = partes[0];
+            const cuerpo = partes[1];
+
+            ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 50px Arial'; 
+            ctx.fillText(titulo, 512, 40);
+
+            ctx.fillStyle = '#ecf0f1'; ctx.font = '36px Arial';
+            const palabras = cuerpo.split(' '); let linea = ''; let y = 120;
+            for(let n = 0; n < palabras.length; n++) {
+                const testLinea = linea + palabras[n] + ' ';
+                if (ctx.measureText(testLinea).width > 900 && n > 0) {
+                    ctx.fillText(linea, 512, y); linea = palabras[n] + ' '; y += 45;
+                } else linea = testLinea;
+            }
+            ctx.fillText(linea, 512, y);
+
+            const panel = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.25, 0.05), new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(canvas) }));
+            panel.position.set(x - 2.5, 1.2, z + 0.06); scene.add(panel);
+            const respaldo = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.35, 0.04), woodMat);
+            respaldo.position.set(x - 2.5, 1.2, z + 0.02); respaldo.castShadow = true; scene.add(respaldo);
+        }
+
+        function crearEntorno() {
+            const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+            for(let i=0; i<512; i+=4) { for(let j=0; j<512; j+=4) {
+                ctx.fillStyle = `rgb(${30+Math.random()*20},${100+Math.random()*60},${30+Math.random()*20})`;
+                ctx.fillRect(i, j, 4, 4);
+            }}
+            const grassTex = new THREE.CanvasTexture(canvas); grassTex.wrapS = THREE.RepeatWrapping; grassTex.wrapT = THREE.RepeatWrapping; grassTex.repeat.set(50, 50);
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ map: grassTex, roughness: 1 }));
+            floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+        }
+
+        function crearCercas() {
+            const woodMat = new THREE.MeshStandardMaterial({ map: crearTexturaMadera(), roughness: 0.8 });
+            const pilarGeo = new THREE.BoxGeometry(0.2, 1.5, 0.2); const tablaGeo = new THREE.BoxGeometry(limiteCerca * 2, 0.15, 0.05);
+            for(let x = -limiteCerca; x <= limiteCerca; x += 2) {
+                [{x: x, z: limiteCerca}, {x: x, z: -limiteCerca}, {x: limiteCerca, z: x}, {x: -limiteCerca, z: x}].forEach(p => { const m = new THREE.Mesh(pilarGeo, woodMat); m.position.set(p.x, 0.75, p.z); m.castShadow=true; scene.add(m); });
+            }
+            [0.5, 1.1].forEach(h => {
+                const t1 = new THREE.Mesh(tablaGeo, woodMat); t1.position.set(0, h, limiteCerca); scene.add(t1);
+                const t2 = new THREE.Mesh(tablaGeo, woodMat); t2.position.set(0, h, -limiteCerca); scene.add(t2);
+                const t3 = new THREE.Mesh(tablaGeo, woodMat); t3.rotation.y = Math.PI/2; t3.position.set(limiteCerca, h, 0); scene.add(t3);
+                const t4 = new THREE.Mesh(tablaGeo, woodMat); t4.rotation.y = Math.PI/2; t4.position.set(-limiteCerca, h, 0); scene.add(t4);
+            });
+        }
+
+        function crearFaroles() {
+            const metalMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.8, roughness: 0.2 });
+            const glassMat = new THREE.MeshBasicMaterial({ color: 0xffffee, transparent: true, opacity: 0.8 });
+            
+            const posiciones = [
+                {x: -12, z: 10}, {x: 12, z: 10},
+                {x: -12, z: -10}, {x: 12, z: -10}
+            ];
+
+            posiciones.forEach(pos => {
+                const farolGroup = new THREE.Group();
+                farolGroup.position.set(pos.x, 0, pos.z);
+                const poste = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3), metalMat);
+                poste.position.y = 1.5; poste.castShadow = true; farolGroup.add(poste);
+                const baseLuz = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.2, 0.1), metalMat);
+                baseLuz.position.y = 3.05; farolGroup.add(baseLuz);
+                const bombilla = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 16), glassMat);
+                bombilla.position.y = 3.2; farolGroup.add(bombilla);
+                const techoLuz = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.2, 8), metalMat);
+                techoLuz.position.y = 3.4; techoLuz.castShadow = true; farolGroup.add(techoLuz);
+                const luz = new THREE.PointLight(0xffaa55, 0, 15); 
+                luz.position.y = 3.2; farolGroup.add(luz);
+                scene.add(farolGroup);
+                interiorLights.push({ bulb: bombilla, light: luz }); 
+            });
+        }
+
+        // --- SISTEMA DINÁMICO (CLIMA Y SENSORES) ---
+        function actualizarEntornoDiario(delta) {
+            currentTimeStr = `${Math.floor(timeOfDay).toString().padStart(2,'0')}:${Math.floor((timeOfDay%1)*60).toString().padStart(2,'0')}`;
+            document.getElementById('time-display').textContent = currentTimeStr;
+            
+            // FÍSICA CLIMÁTICA: Huancayo (Aprox. Max 24°C Día, Min -1°C Noche/Madrugada)
+            ambientTemperature = Math.round(11.5 + 12.5 * Math.sin((timeOfDay - 8) / 24 * Math.PI * 2));
+            
+            // FÍSICA TÉRMICA IGLÚ: Excelente masa térmica por la arcilla y celulosa.
+            // En la madrugada helada (-1°C), retiene el calor interno hasta 17°C. Sube hasta 26°C al mediodía sin ventilación.
+            let naturalIntTemp = 17 + Math.max(0, (ambientTemperature + 1)) * 0.35; 
+            
+            // Lógica del Termostato Inteligente y Ventilador de Extracción (Sin rebotes)
+            if (internalTemperature > 23.0) {
+                isFanActive = true;
+            }
+            // Solo se apaga si la temperatura natural del ambiente ya bajó y no causará un rebote de calor
+            if (naturalIntTemp <= 21.0 && internalTemperature <= 21.0) {
+                isFanActive = false; 
+            }
+
+            // El ventilador fuerza un clima agradable de 20°C mientras está activo
+            let targetIntTemp = isFanActive ? 20.0 : naturalIntTemp;
+            
+            // Actualización suave de la temperatura (Inercia y enfriamiento)
+            if (delta > 0) {
+                internalTemperature += (targetIntTemp - internalTemperature) * 0.3 * delta;
+            }
+
+            const isNight = timeOfDay < 6 || timeOfDay > 18;
+
+            if(!isNight) {
+                const sunAngle = ((timeOfDay - 6) / 12) * Math.PI; 
+                sunLight.intensity = Math.max(Math.sin(sunAngle) * 1.5, 0.1);
+                sunLight.position.set(Math.cos(sunAngle) * 30, Math.sin(sunAngle) * 30, 10);
+                sunLight.color.setHex(0xffffff); 
+                
+                sunMesh.position.copy(sunLight.position); sunMesh.visible = true;
+
+                const targetColor = (timeOfDay < 8 || timeOfDay > 16) ? new THREE.Color(0xffa07a) : new THREE.Color(0x87CEEB); 
+                scene.background = targetColor; if(scene.fog) scene.fog.color = targetColor; 
+                ambientLight.intensity = 0.6;
+
+                stars.material.opacity = 0; 
+                cloudGroup.children.forEach(c => c.children.forEach(p => p.material.opacity = 0.8));
+
+                interiorLights.forEach(lamp => { lamp.light.intensity = 0; lamp.bulb.material.color.setHex(0x555555); });
+            } else {
+                let nightProgress = (timeOfDay > 18) ? (timeOfDay - 18) / 12 : (timeOfDay + 6) / 12;
+                const moonAngle = nightProgress * Math.PI; 
+
+                sunLight.intensity = 0.2; 
+                sunLight.position.set(Math.cos(moonAngle) * 30, Math.sin(moonAngle) * 30, 10);
+                sunLight.color.setHex(0x5588ff); 
+                sunMesh.visible = false;
+
+                scene.background = new THREE.Color(0x0a0a2a); if(scene.fog) scene.fog.color = new THREE.Color(0x0a0a2a); 
+                ambientLight.intensity = 0.2; 
+
+                stars.material.opacity = 1; 
+                cloudGroup.children.forEach(c => c.children.forEach(p => p.material.opacity = 0.1)); 
+
+                interiorLights.forEach(lamp => { lamp.light.intensity = 1.0; lamp.bulb.material.color.setHex(0xffffee); });
+            }
+
+            const tempAmbUI = document.getElementById('temp-amb');
+            const tempIntUI = document.getElementById('temp-int');
+            if (tempAmbUI && tempIntUI) {
+                tempAmbUI.textContent = ambientTemperature + '°C';
+                tempIntUI.textContent = Math.round(internalTemperature) + '°C';
+                
+                if(ambientTemperature >= 22) tempAmbUI.style.color = '#e74c3c'; else if(ambientTemperature < 10) tempAmbUI.style.color = '#3498db'; else tempAmbUI.style.color = '#f1c40f'; 
+                if(Math.round(internalTemperature) >= 24) tempIntUI.style.color = '#e74c3c'; else if(Math.round(internalTemperature) <= 16) tempIntUI.style.color = '#3498db'; else tempIntUI.style.color = '#2ecc71'; 
+            }
+        }
+
+        function actualizarSensoresIoT() {
+            let displayIntTemp = Math.round(internalTemperature);
+            
+            // Lógica para pantallas Iglú (Interna)
+            let statusColorInt = '#4CAF50'; 
+            let statusTextInt = "CONFORT TÉRMICO"; 
+
+            if (displayIntTemp >= 24) { 
+                statusColorInt = (Math.floor(Date.now() / 300) % 2 === 0) ? '#ff0000' : '#8b0000'; 
+                statusTextInt = "ALERTA: CALOR"; 
+            } else if (isFanActive) {
+                statusColorInt = '#3498db'; // Azul claro mientras está regulando activamente
+                statusTextInt = "REGULANDO TEMP.";
+            } else if (displayIntTemp <= 16) { 
+                // Parpadeo Alerta Frío Extremo
+                statusColorInt = (Math.floor(Date.now() / 300) % 2 === 0) ? '#00ffff' : '#0d47a1'; 
+                statusTextInt = "ALERTA: FRÍO"; 
+            }
+
+            // Lógica para Pantalla Gigante (Externa - Huancayo)
+            let statusColorExt = '#f1c40f';
+            let statusTextExt = "CLIMA EXTERNO ESTABLE";
+            if (ambientTemperature >= 22) { statusColorExt = (Math.floor(Date.now() / 300) % 2 === 0) ? '#ff0000' : '#8b0000'; statusTextExt = "ALERTA DE CALOR EXTERNO"; }
+            else if (ambientTemperature <= 5) { statusColorExt = (Math.floor(Date.now() / 300) % 2 === 0) ? '#00ffff' : '#0d47a1'; statusTextExt = "¡ALERTA HELADA EXTERNA!"; }
+            else if (ambientTemperature < 12) { statusColorExt = '#3498db'; statusTextExt = "CLIMA EXTERNO FRÍO"; }
+
+            sensors.forEach(sensor => {
+                const ctx = sensor.ctx;
+
+                if(sensor.type === 'mini') {
+                    // Muestra la temperatura interna del iglú
+                    ctx.fillStyle = statusColorInt; ctx.fillRect(0, 0, 256, 128);
+                    ctx.fillStyle = 'white'; ctx.font = 'bold 50px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillText(`${displayIntTemp} °C`, 128, 50);
+                    
+                    ctx.font = '20px Arial';
+                    if (isFanActive) {
+                        ctx.fillStyle = '#f1c40f'; ctx.fillText('VENTILADOR ON', 128, 100);
+                    } else {
+                        ctx.fillStyle = '#bdc3c7'; ctx.fillText('VENTILADOR OFF', 128, 100);
+                    }
+
+                } else if(sensor.type === 'giant') {
+                    // Muestra exclusivamente el clima exterior de la ciudad
+                    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, 1024, 512);
+                    ctx.strokeStyle = statusColorExt; ctx.lineWidth = 20; ctx.strokeRect(10, 10, 1004, 492);
+                    
+                    ctx.fillStyle = 'white'; ctx.font = 'bold 60px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillText(`CLIMA AMBIENTE`, 512, 80);
+                    
+                    ctx.fillStyle = statusColorExt; ctx.font = 'bold 180px Arial';
+                    ctx.fillText(`${ambientTemperature}°C`, 512, 230);
+                    
+                    ctx.fillStyle = '#bdc3c7'; ctx.font = '40px Arial';
+                    ctx.fillText(statusTextExt, 512, 360);
+
+                    // Reloj Inferior de la Pantalla Gigante (Mejorado)
+                    ctx.fillStyle = '#0a0a0a'; ctx.fillRect(10, 412, 1004, 90);
+                    ctx.fillStyle = '#00ff00'; ctx.font = 'bold 55px monospace';
+                    ctx.fillText(`HUANCAYO - ${currentTimeStr} HRS`, 512, 457);
+
+                } else if(sensor.type === 'phone') {
+                    // App del Celular
+                    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, 512, 1024); ctx.fillStyle = '#111'; ctx.fillRect(0, 0, 512, 100);
+                    ctx.fillStyle = '#fff'; ctx.font = 'bold 36px Arial'; ctx.textAlign = 'center'; ctx.fillText('App Granja IoT', 256, 60);
+                    
+                    ctx.fillStyle = statusColorInt; ctx.beginPath(); ctx.arc(256, 320, 150, 0, Math.PI * 2); ctx.fill();
+                    ctx.fillStyle = 'white'; ctx.font = 'bold 90px Arial'; ctx.fillText(`${displayIntTemp}°C`, 256, 350);
+                    ctx.fillStyle = statusColorInt; ctx.font = 'bold 40px Arial'; ctx.fillText(statusTextInt, 256, 520);
+                    
+                    ctx.fillStyle = '#ccc'; ctx.font = '28px Arial'; ctx.fillText(`Exterior: ${ambientTemperature}°C`, 256, 600);
+                    ctx.fillStyle = isFanActive ? '#f1c40f' : '#7f8c8d';
+                    ctx.fillText(`Ventilador: ${isFanActive ? 'ENCENDIDO' : 'APAGADO'}`, 256, 650);
+                    
+                    ctx.fillStyle = '#2ecc71'; ctx.font = '24px monospace'; 
+                    ctx.fillText(`Hora: ${currentTimeStr} hrs`, 256, 920); ctx.fillText('Sincronizado vía WiFi', 256, 960);
+                }
+                sensor.texture.needsUpdate = true;
+            });
+        }
+
+        // --- FAUNA Y COMPORTAMIENTO ---
+        function generarCuyes(cantidad) {
+            const colores = [0x8B4513, 0xFFFFFF, 0x333333, 0xCD853F, 0x9e6a38];
+            for(let i=0; i<cantidad; i++) {
+                const cuyGroup = new THREE.Group();
+                const mat = new THREE.MeshStandardMaterial({ color: colores[Math.floor(Math.random() * colores.length)], roughness: 0.9 });
+                
+                const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.14, 8, 8), mat);
+                body.rotation.z = Math.PI / 2; body.position.y = 0.09; body.castShadow = true; cuyGroup.add(body);
+                
+                const headGroup = new THREE.Group();
+                headGroup.position.set(0.13, 0.11, 0);
+                const head = new THREE.Mesh(new THREE.SphereGeometry(0.075, 8, 8), mat); head.castShadow = true; headGroup.add(head);
+                
+                const snout = new THREE.Mesh(new THREE.SphereGeometry(0.025, 8, 8), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+                snout.position.set(0.07, -0.02, 0); headGroup.add(snout);
+                
+                const eyeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+                const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), eyeMat); eyeL.position.set(0.04, 0.02, 0.045); headGroup.add(eyeL);
+                const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), eyeMat); eyeR.position.set(0.04, 0.02, -0.045); headGroup.add(eyeR);
+
+                const earGeo = new THREE.SphereGeometry(0.02, 8, 8);
+                const earL = new THREE.Mesh(earGeo, mat); earL.position.set(-0.01, 0.06, 0.05); headGroup.add(earL);
+                const earR = new THREE.Mesh(earGeo, mat); earR.position.set(-0.01, 0.06, -0.05); headGroup.add(earR);
+
+                cuyGroup.add(headGroup);
+
+                const legs = []; const legMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+                [{x:0.09, z:0.05}, {x:0.09, z:-0.05}, {x:-0.09, z:0.05}, {x:-0.09, z:-0.05}].forEach(pos => {
+                    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.015, 0.04, 4, 4), legMat);
+                    leg.position.set(pos.x, 0.03, pos.z); leg.castShadow = true; cuyGroup.add(leg); legs.push(leg);
+                });
+
+                cuyGroup.position.set((Math.random() - 0.5) * 20, 0, (Math.random() - 0.5) * 20);
+                cuyGroup.rotation.y = Math.random() * Math.PI * 2;
+                scene.add(cuyGroup);
+
+                const bedAngle = Math.random() * Math.PI * 2;
+                const bedRadius = Math.random() * 0.9;
+
+                cuyes.push({ 
+                    mesh: cuyGroup, head: headGroup, legs: legs, 
+                    speed: 1.0 + Math.random() * 1.5,
+                    turnSpeed: (Math.random() - 0.5) * 5, 
+                    stateTime: Math.random() * 3, state: 'idle',
+                    bedX: posIglu3.x + Math.cos(bedAngle) * bedRadius, 
+                    bedZ: posIglu3.z + Math.sin(bedAngle) * bedRadius
+                });
+            }
+        }
+
+        function animarCuyes(delta, time) {
+            const isNight = timeOfDay < 6 || timeOfDay > 18;
+
+            cuyes.forEach(cuy => {
+                cuy.stateTime -= delta;
+                
+                if (isNight) {
+                    const distToCenter = Math.hypot(cuy.mesh.position.x - posIglu3.x, cuy.mesh.position.z - posIglu3.z);
+                    const distToBed = Math.hypot(cuy.mesh.position.x - cuy.bedX, cuy.mesh.position.z - cuy.bedZ);
+
+                    if (distToCenter > 1.3 || distToBed > 0.1) {
+                        cuy.state = 'walking';
+                        let aimX, aimZ;
+                        const dzToCenter = cuy.mesh.position.z - posIglu3.z;
+                        
+                        if (cuy.mesh.position.z > posIglu3.z + 0.5) {
+                            if (Math.abs(cuy.mesh.position.x - posIglu3.x) > 0.6 && cuy.mesh.position.z < posIglu3.z + 2.0) {
+                                aimX = posIglu3.x; aimZ = posIglu3.z + 2.0;
+                            } else if (distToCenter > 1.5) {
+                                aimX = posIglu3.x; aimZ = posIglu3.z + 1.2;
+                            } else {
+                                aimX = cuy.bedX; aimZ = cuy.bedZ;
+                            }
+                        } else if (distToCenter > 1.4) {
+                            aimX = posIglu3.x + (cuy.mesh.position.x > posIglu3.x ? 3.5 : -3.5);
+                            aimZ = posIglu3.z + 2.5;
+                        } else {
+                            aimX = cuy.bedX; aimZ = cuy.bedZ;
+                        }
+
+                        const targetRotation = Math.atan2(-(aimZ - cuy.mesh.position.z), aimX - cuy.mesh.position.x);
+                        let diff = targetRotation - cuy.mesh.rotation.y;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        
+                        cuy.mesh.rotation.y += diff * 8 * delta;
+                    } else {
+                        cuy.state = 'sleeping';
+                    }
+                } else {
+                    const distToCenter = Math.hypot(cuy.mesh.position.x - posIglu3.x, cuy.mesh.position.z - posIglu3.z);
+                    
+                    if (distToCenter < 1.6) {
+                        cuy.state = 'walking';
+                        const aimX = posIglu3.x; 
+                        const aimZ = posIglu3.z + 3.0;
+
+                        const targetRotation = Math.atan2(-(aimZ - cuy.mesh.position.z), aimX - cuy.mesh.position.x);
+                        let diff = targetRotation - cuy.mesh.rotation.y;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        
+                        cuy.mesh.rotation.y += diff * 8 * delta;
+                        cuy.stateTime = 0.5; 
+                    } else if(cuy.stateTime <= 0) {
+                        const r = Math.random();
+                        if(r < 0.4) cuy.state = 'walking';
+                        else if(r < 0.7) cuy.state = 'eating';
+                        else if(r < 0.85) cuy.state = 'looking';
+                        else cuy.state = 'idle';
+                        
+                        cuy.stateTime = 1 + Math.random() * 4; 
+                        cuy.turnSpeed = (Math.random() - 0.5) * 2;
+                    }
+                }
+
+                let onGrid = false;
+                [posIglu1, posIglu3].forEach(iglu => {
+                    if(Math.hypot(cuy.mesh.position.x - iglu.x, cuy.mesh.position.z - iglu.z) < 1.6) onGrid = true;
+                });
+                const baseHeight = onGrid ? 0.165 : 0; 
+
+                if(cuy.state === 'walking') {
+                    cuy.mesh.scale.set(1, 1, 1);
+                    cuy.mesh.translateOnAxis(new THREE.Vector3(1,0,0), cuy.speed * delta);
+                    if (!isNight) cuy.mesh.rotation.y += cuy.turnSpeed * delta;
+                    
+                    cuy.mesh.position.y = baseHeight + Math.abs(Math.sin(time * 20)) * 0.015;
+                    cuy.head.rotation.set(0,0,0);
+
+                    const swing = Math.sin(time * 25) * 0.5;
+                    cuy.legs[0].rotation.z = swing; cuy.legs[3].rotation.z = swing; 
+                    cuy.legs[1].rotation.z = -swing; cuy.legs[2].rotation.z = -swing;
+
+                    if (Math.abs(cuy.mesh.position.x) > limiteCerca - 1 || Math.abs(cuy.mesh.position.z) > limiteCerca - 1) {
+                        cuy.mesh.rotation.y += Math.PI;
+                        cuy.mesh.translateOnAxis(new THREE.Vector3(1,0,0), 0.5); 
+                        cuy.mesh.position.x = Math.max(-(limiteCerca-1), Math.min(limiteCerca-1, cuy.mesh.position.x));
+                        cuy.mesh.position.z = Math.max(-(limiteCerca-1), Math.min(limiteCerca-1, cuy.mesh.position.z));
+                    }
+
+                    [posIglu2, posIglu3].forEach(iglu => {
+                        if (iglu === posIglu3) {
+                            const isAtDoor = Math.abs(cuy.mesh.position.x - iglu.x) < 0.6 && (cuy.mesh.position.z - iglu.z) > -0.5;
+                            if (isAtDoor) return;
+                        }
+                        const dx = cuy.mesh.position.x - iglu.x; const dz = cuy.mesh.position.z - iglu.z;
+                        const dist = Math.sqrt(dx*dx + dz*dz);
+                        
+                        if(dist > 1.2 && dist < 1.6) {
+                            cuy.mesh.rotation.y += Math.PI; 
+                            cuy.mesh.translateOnAxis(new THREE.Vector3(1,0,0), 0.2); 
+                        }
+                    });
+
+                } else if (cuy.state === 'sleeping') {
+                    cuy.mesh.position.y = baseHeight;
+                    cuy.mesh.scale.set(1, 0.7, 1); 
+                    cuy.head.rotation.set(0,0,0);
+                    cuy.legs.forEach(l => l.rotation.z = 0);
+                } else {
+                    cuy.mesh.scale.set(1, 1, 1);
+                    cuy.mesh.position.y = baseHeight;
+                    cuy.legs.forEach(l => l.rotation.z = 0);
+                    
+                    if(cuy.state === 'eating') {
+                        cuy.head.rotation.set(Math.PI / 4 + Math.sin(time * 15) * 0.1, 0, 0); 
+                    } else if (cuy.state === 'looking') {
+                        cuy.head.rotation.set(0, Math.sin(time * 5) * 0.5, 0); 
+                    } else if (cuy.state === 'idle') {
+                        cuy.head.rotation.set(0,0,0);
+                        cuy.mesh.scale.y = 1 + Math.sin(time * 5) * 0.02; 
+                    }
+                }
+            });
+        }
+
+        // --- CONTROLES Y FÍSICA ---
+        function setupControls() {
+            const startScreen = document.getElementById('start-screen');
+            startScreen.addEventListener('click', () => { startScreen.style.display = 'none'; });
+
+            document.addEventListener('mousedown', (e) => {
+                if (e.target.closest('.panel-ui')) return;
+                isDragging = true; previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                euler.setFromQuaternion(camera.quaternion);
+                euler.y -= (e.clientX - previousMousePosition.x) * 0.005; euler.x -= (e.clientY - previousMousePosition.y) * 0.005;
+                euler.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, euler.x));
+                camera.quaternion.setFromEuler(euler); previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+            document.addEventListener('mouseup', () => { isDragging = false; });
+            
+            document.addEventListener('touchstart', (e) => {
+                if (e.target.closest('.panel-ui')) return;
+                isDragging = true; previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }, {passive: false});
+            document.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                euler.setFromQuaternion(camera.quaternion);
+                euler.y -= (e.touches[0].clientX - previousMousePosition.x) * 0.005; euler.x -= (e.touches[0].clientY - previousMousePosition.y) * 0.005;
+                euler.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, euler.x));
+                camera.quaternion.setFromEuler(euler); previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }, {passive: false});
+            document.addEventListener('touchend', () => { isDragging = false; });
+
+            const onKeyDown = function (event) {
+                switch (event.code) { 
+                    case 'ArrowUp': case 'KeyW': move.forward = true; break; 
+                    case 'ArrowLeft': case 'KeyA': move.left = true; break; 
+                    case 'ArrowDown': case 'KeyS': move.backward = true; break; 
+                    case 'ArrowRight': case 'KeyD': move.right = true; break; 
+                    case 'ShiftLeft': case 'ShiftRight': move.run = true; break; 
+                    case 'Space': 
+                        if (!isJumping) {
+                            isJumping = true;
+                            velocityY = 6.0; 
+                        }
+                        break;
+                    case 'KeyC': isPhoneVisible = !isPhoneVisible; break; 
+                    case 'KeyF': flashlight.intensity = flashlight.intensity > 0 ? 0 : 2.5; break;
+                }
+            };
+            const onKeyUp = function (event) {
+                switch (event.code) { 
+                    case 'ArrowUp': case 'KeyW': move.forward = false; break; 
+                    case 'ArrowLeft': case 'KeyA': move.left = false; break; 
+                    case 'ArrowDown': case 'KeyS': move.backward = false; break; 
+                    case 'ArrowRight': case 'KeyD': move.right = false; break; 
+                    case 'ShiftLeft': case 'ShiftRight': move.run = false; break; 
+                }
+            };
+            document.addEventListener('keydown', onKeyDown); document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function setupUI() {
+            const timeSlider = document.getElementById('time-slider');
+            timeSlider.addEventListener('input', (e) => {
+                timeOfDay = parseFloat(e.target.value);
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function aplicarColisiones(oldPos) {
+            const pos = camera.position; let colision = false;
+            if (Math.abs(pos.x) > limiteCerca - 0.5 || Math.abs(pos.z) > limiteCerca - 0.5) colision = true;
+
+            [posIglu2, posIglu3].forEach(iglu => {
+                const dx = pos.x - iglu.x; const dz = pos.z - iglu.z; const dist = Math.sqrt(dx*dx + dz*dz);
+                if (dist > 1.25 && dist < 1.6 && !(Math.abs(dx) < 0.38 && dz > 0)) colision = true;
+            });
+
+            if (colision) {
+                camera.position.x = oldPos.x;
+                camera.position.z = oldPos.z;
+            }
+
+            let onGrid = false;
+            [posIglu1, posIglu3].forEach(iglu => {
+                if(Math.sqrt((camera.position.x - iglu.x)**2 + (camera.position.z - iglu.z)**2) < 1.6) onGrid = true;
+            });
+            return onGrid ? 1.55 : 1.4; 
+        }
+
+        // --- BUCLE PRINCIPAL ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now(); const delta = (time - prevTime) / 1000;
+
+            actualizarEntornoDiario(delta);
+            actualizarSensoresIoT();
+
+            // Girar los ventiladores si hace calor en el iglú
+            fans.forEach(fan => {
+                if (isFanActive) {
+                    fan.rotation.y += 20 * delta; // Gira rápidamente para extraer el calor
+                }
+            });
+
+            if (cloudGroup) { cloudGroup.position.x -= 0.5 * delta; if (cloudGroup.position.x < -150) cloudGroup.position.x = 150; }
+
+            if(phoneGroup) {
+                const targetY = isPhoneVisible ? -0.3 : -1.5; const targetRotX = isPhoneVisible ? -0.15 : -Math.PI / 2;
+                phoneGroup.position.y += (targetY - phoneGroup.position.y) * 8 * delta;
+                phoneGroup.rotation.x += (targetRotX - phoneGroup.rotation.x) * 8 * delta;
+            }
+
+            if (document.getElementById('start-screen').style.display === 'none') {
+                const speed = move.run ? 14.0 * delta : 7.0 * delta; 
+                
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion); forward.y = 0; forward.normalize();
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion); right.y = 0; right.normalize();
+
+                const moveVec = new THREE.Vector3();
+                if (move.forward) moveVec.add(forward); if (move.backward) moveVec.sub(forward);
+                if (move.right) moveVec.add(right); if (move.left) moveVec.sub(right);
+
+                const oldPos = camera.position.clone();
+                if (moveVec.lengthSq() > 0) {
+                    moveVec.normalize().multiplyScalar(speed);
+                    camera.position.add(moveVec);
+                }
+
+                const baseHeight = aplicarColisiones(oldPos);
+                
+                if (isJumping) {
+                    camera.position.y += velocityY * delta;
+                    velocityY += gravity * delta;
+                    if (camera.position.y <= baseHeight) {
+                        camera.position.y = baseHeight;
+                        isJumping = false;
+                        velocityY = 0;
+                    }
+                } else {
+                    camera.position.y += (baseHeight - camera.position.y) * 10 * delta;
+                }
+            }
+
+            animarCuyes(delta, time / 1000);
+            prevTime = time; renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
